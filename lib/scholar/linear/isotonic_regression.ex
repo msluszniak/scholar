@@ -4,6 +4,9 @@ defmodule Scholar.Linear.IsotonicRegression do
   observations by solving a convex optimization problem. It is a form of
   regression analysis that can be used as an alternative to polynomial
   regression to fit nonlinear data.
+
+  Time complexity of isotonic regression is $O(N^2)$ where $N$ is the
+  number of points.
   """
   require Nx
   import Nx.Defn, except: [transform: 2]
@@ -296,6 +299,24 @@ defmodule Scholar.Linear.IsotonicRegression do
     model = %__MODULE__{model | x_thresholds: x}
     model = %__MODULE__{model | y_thresholds: y}
 
+    %__MODULE__{
+      model
+      | preprocess:
+          Scholar.Interpolation.Linear.fit(
+            model.x_thresholds,
+            model.y_thresholds
+          )
+    }
+  end
+
+  @doc """
+  Preprocesses the `model` for prediction.
+
+  Returns an updated `model`. This is a special version of `preprocess/1` that
+  does not trim duplicates so it can be used in defns. It is not recommended
+  to use this function directly.
+  """
+  defn special_preprocess(model) do
     %__MODULE__{
       model
       | preprocess:
