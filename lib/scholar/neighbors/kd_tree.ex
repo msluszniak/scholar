@@ -181,7 +181,7 @@ defmodule Scholar.Neighbors.KDTree do
       end
 
     k = rem(level, dims)
-    Nx.argsort(tensor[[.., k]] + band * tags, type: :u32)
+    Nx.argsort(tensor[[.., k]] + band * tags, type: :u32) |> Nx.as_type(:s64)
   end
 
   defnp update_tags(tags, indexes, level, levels, size) do
@@ -375,15 +375,12 @@ defmodule Scholar.Neighbors.KDTree do
   defnp query_n(tree, data, opts) do
     k = opts[:k]
     num_samples = Nx.axis_size(data, 0)
-    # data_rank = Nx.rank(data)
     knn = Nx.broadcast(Nx.s64(0), {num_samples, k})
-    # index = Nx.broadcast(Nx.u32(0), {data_rank})
 
     {knn, _} =
       while {knn, {tree, data, i = Nx.s64(0)}}, i < num_samples do
         curr_point = data[[i]]
-        {k_neighbors, rest} = query_one_point(curr_point, tree, k: k) #|> print_value()
-        # index = Nx.indexed_put(index, Nx.new_axis(0, 0), i)
+        k_neighbors = query_one_point(curr_point, tree, k: k)
         knn = Nx.put_slice(knn, [i, 0], Nx.new_axis(k_neighbors, 0))
         {knn, {tree, data, i + 1}}
       end
@@ -392,7 +389,6 @@ defmodule Scholar.Neighbors.KDTree do
   end
 
   defnp sort_by_distances(distances, point_indices) do
-    # iota = Nx.iota(Nx.shape(distances))
     indices = Nx.argsort(distances)
     {Nx.take(distances, indices), Nx.take(point_indices, indices)}
   end
@@ -413,10 +409,10 @@ defmodule Scholar.Neighbors.KDTree do
   end
 
   defnp update_visited(node, visited, distances, nearest_neighbors, tree, point, k) do
-    if visited[node] do
+    if visited[tree.indexes[node]] do
       {visited, {distances, nearest_neighbors}}
     else
-      visited = Nx.indexed_put(visited, Nx.new_axis(node, 0), 1)
+      visited = Nx.indexed_put(visited, Nx.new_axis(tree.indexes[node], 0), Nx.u8(1))
 
       {distances, nearest_neighbors} =
         update_knn(nearest_neighbors, distances, tree, node, point, k)
@@ -437,133 +433,46 @@ defmodule Scholar.Neighbors.KDTree do
     mode = down
     cnt = 0
 
-    {nearest_neighbors, {node, tree, point, distances, visited, i, mode, cnt}} =
-      while {nearest_neighbors, {node, tree, point, distances, visited, i = Nx.s64(0), mode, cnt}},
+    {nearest_neighbors, _} =
+      while {nearest_neighbors,
+             {node, tree, point, distances, visited, i = Nx.s64(0), mode, cnt}},
             node != -1 and i >= 0 do
-        # node != -1 and not (node == 0 and visited[tree.indexes[left_child(node)]] and visited[tree.indexes[right_child(node)]]) do
         coord_indicator = rem(i, dims)
 
         {node, i, visited, nearest_neighbors, distances, mode} =
           cond do
             node >= size ->
-              {parent(node), i - 1, visited, nearest_neighbors, distances, up} #|> print_value()
+              {parent(node), i - 1, visited, nearest_neighbors, distances, up}
 
             mode == down and
                 point[[coord_indicator]] < tree.data[[tree.indexes[node], coord_indicator]] ->
               {left_child(node), i + 1, visited, nearest_neighbors, distances, down}
-              #|> print_value()
 
             mode == down and
                 point[[coord_indicator]] >= tree.data[[tree.indexes[node], coord_indicator]] ->
               {right_child(node), i + 1, visited, nearest_neighbors, distances, down}
-              #|> print_value()
 
             mode == up ->
-              # visited = Nx.indexed_put(visited, Nx.new_axis(node, 0), 1)
-
-              # {distances, nearest_neighbors} =
-              #   update_knn(nearest_neighbors, distances, tree, node, point, k)
-
-              # {visited, {distances, nearest_neighbors}} = if visited[tree.indexes[node]] do
-              #   {visited, {distances, nearest_neighbors}}
-              # else
-              #   visited = Nx.indexed_put(visited, Nx.new_axis(tree.indexes[node], 0), Nx.u8(1))
-
-              #   {distances, nearest_neighbors} =
-              #     update_knn(nearest_neighbors, distances, tree, node, point, k)
-
-              #   {visited, {distances, nearest_neighbors}} |> print_value()
-              # end
-
               cond do
                 visited[tree.indexes[node]] ->
                   {parent(node), i - 1, visited, nearest_neighbors, distances, up}
-                  #|> print_value()
 
-                # leafnode
-                left_child(node) >= size and right_child(node) >= size ->
-                  # {visited, {distances, nearest_neighbors}} = update_visited(node, visited, distances, nearest_neighbors, tree, point, k)
+                (left_child(node) >= size and right_child(node) >= size) or
+                  (left_child(node) < size and visited[tree.indexes[left_child(node)]] and
+                     right_child(node) < size and
+                     visited[tree.indexes[right_child(node)]]) or
+                    (left_child(node) < size and visited[tree.indexes[left_child(node)]] and
+                       right_child(node) >= size) ->
                   {visited, {distances, nearest_neighbors}} =
-                    if visited[tree.indexes[node]] do
-                      {visited, {distances, nearest_neighbors}}
-                    else
-                      visited =
-                        Nx.indexed_put(visited, Nx.new_axis(tree.indexes[node], 0), Nx.u8(1))
-
-                      {distances, nearest_neighbors} =
-                        update_knn(nearest_neighbors, distances, tree, node, point, k)
-
-                      # |> print_value()
-                      {visited, {distances, nearest_neighbors}}
-                    end
+                    update_visited(node, visited, distances, nearest_neighbors, tree, point, k)
 
                   {parent(node), i - 1, visited, nearest_neighbors, distances, up}
-                  #|> print_value()
-
-                # both visited
-                left_child(node) < size and visited[tree.indexes[left_child(node)]] and
-                  right_child(node) < size and
-                    visited[tree.indexes[right_child(node)]] ->
-                  {visited, {distances, nearest_neighbors}} =
-                    if visited[tree.indexes[node]] do
-                      {visited, {distances, nearest_neighbors}}
-                    else
-                      visited =
-                        Nx.indexed_put(visited, Nx.new_axis(tree.indexes[node], 0), Nx.u8(1))
-
-                      {distances, nearest_neighbors} =
-                        update_knn(nearest_neighbors, distances, tree, node, point, k)
-
-                      # |> print_value()
-                      {visited, {distances, nearest_neighbors}}
-                    end
-
-                  # {visited, {distances, nearest_neighbors}} = update_visited(node, visited, distances, nearest_neighbors, tree, point, k)
-                  {parent(node), i - 1, visited, nearest_neighbors, distances, up}
-                  #|> print_value()
-
-                left_child(node) < size and visited[tree.indexes[left_child(node)]] and
-                    right_child(node) >= size ->
-                  {visited, {distances, nearest_neighbors}} =
-                    if visited[tree.indexes[node]] do
-                      {visited, {distances, nearest_neighbors}}
-                    else
-                      visited =
-                        Nx.indexed_put(visited, Nx.new_axis(tree.indexes[node], 0), Nx.u8(1))
-
-                      {distances, nearest_neighbors} =
-                        update_knn(nearest_neighbors, distances, tree, node, point, k)
-
-                      # |> print_value()
-                      {visited, {distances, nearest_neighbors}}
-                    end
-
-                  # {visited, {distances, nearest_neighbors}} = update_visited(node, visited, distances, nearest_neighbors, tree, point, k)
-                  {parent(node), i - 1, visited, nearest_neighbors, distances, up}
-                  #|> print_value()
-
-                # # Hmmm ?! how to check if left or right child doesn't exist
-                # left_child(node) >= size and right_child(node) < size and
-                #     visited[right_child(node)] ->
-                #   # {visited, {distances, nearest_neighbors}} = update_visited(node, visited, distances, nearest_neighbors, tree, point, k)
-                #   {parent(node), i - 1, visited, nearest_neighbors, distances, up}
 
                 left_child(node) < size and visited[tree.indexes[left_child(node)]] and
                   right_child(node) < size and
                     not visited[tree.indexes[right_child(node)]] ->
                   {visited, {distances, nearest_neighbors}} =
-                    if visited[tree.indexes[node]] do
-                      {visited, {distances, nearest_neighbors}}
-                    else
-                      visited =
-                        Nx.indexed_put(visited, Nx.new_axis(tree.indexes[node], 0), Nx.u8(1))
-
-                      {distances, nearest_neighbors} =
-                        update_knn(nearest_neighbors, distances, tree, node, point, k)
-
-                      # |> print_value()
-                      {visited, {distances, nearest_neighbors}}
-                    end
+                    update_visited(node, visited, distances, nearest_neighbors, tree, point, k)
 
                   if Nx.any(
                        Scholar.Metrics.Distance.squared_euclidean(
@@ -573,29 +482,15 @@ defmodule Scholar.Neighbors.KDTree do
                          distances
                      ) do
                     {right_child(node), i + 1, visited, nearest_neighbors, distances, down}
-                    #|> print_value()
                   else
-                    # visited = Nx.indexed_put(visited, Nx.new_axis(node, 0), 1)
                     {parent(node), i - 1, visited, nearest_neighbors, distances, up}
-                    #|> print_value()
                   end
 
                 ((right_child(node) < size and visited[tree.indexes[right_child(node)]]) or
                    right_child(node) == size) and
                     not visited[tree.indexes[left_child(node)]] ->
                   {visited, {distances, nearest_neighbors}} =
-                    if visited[tree.indexes[node]] do
-                      {visited, {distances, nearest_neighbors}}
-                    else
-                      visited =
-                        Nx.indexed_put(visited, Nx.new_axis(tree.indexes[node], 0), Nx.u8(1))
-
-                      {distances, nearest_neighbors} =
-                        update_knn(nearest_neighbors, distances, tree, node, point, k)
-
-                      # |> print_value()
-                      {visited, {distances, nearest_neighbors}}
-                    end
+                    update_visited(node, visited, distances, nearest_neighbors, tree, point, k)
 
                   if Nx.any(
                        Scholar.Metrics.Distance.squared_euclidean(
@@ -605,16 +500,13 @@ defmodule Scholar.Neighbors.KDTree do
                          distances
                      ) do
                     {left_child(node), i + 1, visited, nearest_neighbors, distances, down}
-                    #|> print_value()
                   else
-                    # visited = Nx.indexed_put(visited, Nx.new_axis(node, 0), 1)
                     {parent(node), i - 1, visited, nearest_neighbors, distances, up}
-                    #|> print_value()
                   end
 
                 # Should be not reachable
                 true ->
-                  {node, i, visited, nearest_neighbors, distances, mode} #|> print_value()
+                  {node, i, visited, nearest_neighbors, distances, mode}
               end
 
             # Should be not reachable
@@ -625,7 +517,6 @@ defmodule Scholar.Neighbors.KDTree do
         {nearest_neighbors, {node, tree, point, distances, visited, i, mode, cnt + 1}}
       end
 
-    {nearest_neighbors, {node, tree, point, distances, visited, i, mode, cnt}}
-    # nearest_neighbors
+    nearest_neighbors
   end
 end
